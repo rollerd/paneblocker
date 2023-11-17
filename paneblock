@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+re='^[0-9]+$'
+mode="None"
+invert="no"
+IFS=": " read -r -a panel_array <<< $(tmux list-panes | awk '{print $1}' | tr ':\n' ' ')
+
+for arg in "$@"; do
+    case $arg in
+        -i|--invert)
+            invert="yes"
+            shift
+            ;;
+        -e|--enable)
+            mode="-e"
+            shift
+            ;;
+        -d|--disable)
+            mode="-d"
+            shift
+            ;;
+        -a|--all)
+            mode="-a"
+            shift
+            ;;
+    esac
+done
+
+if [ $invert = "yes" ];then
+    target_panes=$(echo ${panel_array[@]} ${@} | tr ' ' '\n' | sort | uniq -u)
+else
+    if [ $mode = "-a" ];then
+        echo "Enabling input on all panes"
+        target_panes=${panel_array[@]}
+    else
+        target_panes=$@
+    fi
+fi
+
+for pane in ${target_panes[@]};do
+    if ! [[ $pane =~ $re ]] ; then
+        echo "Error: Args must be pane numbers" >&2; exit 
+    fi
+    if [ $mode = "None" ];then
+        echo "Must set mode: -e or -d" >&2; exit 1
+    fi
+    if [[ $mode = "-e" || $mode = "-a" ]]; then
+        echo "Enabling input on pane: $pane"
+        tmux select-pane -t $pane -e
+        tmux set-option -p -t $pane @custom_pane_title "enabled"
+    fi
+    if [ $mode = "-d" ];then
+        echo "Disabling input on pane: $pane"
+        tmux select-pane -t $pane -d
+        tmux set-option -p -t $pane @custom_pane_title "disabled"
+    fi
+done
