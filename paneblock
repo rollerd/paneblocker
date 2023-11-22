@@ -1,92 +1,263 @@
 #!/usr/bin/env bash
 
-re='^[0-9]+$'
-mode="None"
-invert="no"
-# Gather all existing pane indexes into panel_array
-IFS=": " read -r -a panel_array <<< $(tmux list-panes | awk '{print $1}' | tr ':\n' ' ')
+num_re='^[0-9]+$'
+enabled_mode=false
+enable_all_mode=false
+disabled_mode=false
+invert_mode=false
+only_mode=false
+group_name="None"
+group_action=false
+# Gather all existing pane indexes into pane_array
+IFS=": " read -r -a pane_array <<< $(tmux list-panes | awk '{print $1}' | tr ':\n' ' ')
 
 Help()
 {
    # Display Help
    echo "paneblock tmux help"
    echo
-   echo "Syntax: paneblock [-h|d|e|i|a] <pane index(es)>"
+   echo "Syntax: paneblock [-h|d|e|i|a|o|g:] [group_name] <pane index(es)>"
    echo "options:"
    echo "h     Print this help."
    echo "d     disable input on <pane index>"
    echo "e     enable input on <pane index>"
    echo "i     invert selection (requires -e or -d flag)"
    echo "a     enable input on all panes"
+   echo "g     create/modify group"
    echo 
    echo "Examples:"
-   echo "Disable input on panes 0,4,6:              \`paneblock -d 0 4 6\`"
-   echo "Enable input on pane 4:                    \`paneblock -e 4\`"
-   echo "Re-enable input on all panes:              \`paneblock -a\`"
-   echo "Disable input on all panes EXCEPT 0,4,6:   \`paneblock -d -i 0 4 6\`"
+   echo "Disable input on panes 0,4,6:                      \`paneblock -d 0 4 6\`"
+   echo "Enable input on pane 4:                            \`paneblock -e 4\`"
+   echo "Re-enable input on all panes:                      \`paneblock -a\`"
+   echo "Disable input on all panes EXCEPT 0,4,6:           \`paneblock -id 0 4 6\`"
+   echo "Create group and add panes:                        \`paneblock -g <group_name> 0 3 4\`"
+   echo "Add pane(s) to existing group:                     \`paneblock -g <group_name> + 5 6\`"
+   echo "Enable panes in group:                             \`paneblock -eg <group_name>\`"
+   echo "Disable panes in group:                            \`paneblock -dg <group_name>\`"
+   echo "Enable panes only in group \(disable others\):     \`paneblock -og <group_name>\`"
    echo
+   exit 0
 }
 
-for arg in "$@"; do
-    case $arg in
-        -h|--help)
-            Help
-            exit
-            ;;
-        -i|--invert)
-            invert="yes"
-            shift
-            ;;
-        -e|--enable)
-            mode="-e"
-            shift
-            ;;
-        -d|--disable)
-            mode="-d"
-            shift
-            ;;
-        -a|--all)
-            mode="-a"
-            shift
-            ;;
-    esac
-done
+showopts()
+{
+    while getopts 'hg:iedao' opt;do
+        case "$opt" in
+            h) Help ;;
+            g) group_name="$OPTARG" ;;
+            i) invert_mode=true ;;
+            e) enabled_mode=true ;;
+            d) disabled_mode=true ;;
+            a) enable_all_mode=true ;;
+            o) only_mode=true ;;
+        esac
+    done
+    return $OPTIND
+}
 
-# If invert: add all indexes that dont match the args input to the target_panes
-if [ $invert = "yes" ];then
-    target_panes=$(echo ${panel_array[@]} ${@} | tr ' ' '\n' | sort | uniq -u)
-else
-    # If 'all': Add all indexes to target_panes
-    if [ $mode = "-a" ];then
-        echo "Enabling input on all panes"
-        target_panes=${panel_array[@]}
-    # Add just the arg inputs to target_panes
+main()
+{
+    # Set pane title bars
+    tmux set -g pane-border-status top
+    tmux set -g pane-border-format "#[fg=black, bg=green] #{pane_index} #{@groupid} #{@custom_pane_title}"
+
+    showopts $@
+    option_index="${@:$OPTIND}" 
+    # Group mode branch
+    if [ $group_name != "None" ];then
+        if [ $enabled_mode = true ];then
+            enable_group $group_name
+        elif [ $disabled_mode = true ];then
+            disable_group $group_name
+        elif [ $only_mode = true ];then
+            enable_only_group $group_name
+        else
+            group_panes $option_index
+        fi
+    # Invert mode branch
+    elif [ $invert_mode = true ];then
+        target_panes=$(echo ${pane_array[@]} ${option_index[@]} | tr ' ' '\n' | sort | uniq -u)
+        if [ $enabled_mode = true ];then
+            enable_panes $target_panes
+        elif [ $disabled_mode = true ];then
+            disable_panes $target_panes
+        else
+            echo "-e or -d (enabled/disabled) flags required"
+            exit 1
+        fi
+    # Regular modes branch
     else
-        target_panes=$@
+        target_panes=${option_index[@]}
+        if [ $only_mode = true ];then
+            echo "-o mode can only be used with groups (-g)"
+            exit 1
+        elif [ $enabled_mode = true ];then
+            enable_panes $target_panes
+        elif [ $disabled_mode = true ];then
+            disable_panes $target_panes
+        elif [ $enable_all_mode = true ];then
+            enable_panes ${pane_array[@]}
+        else
+            echo "-e -d or -a (enabled/disabled/enable_all) flags required"
+            exit 1
+        fi
     fi
-fi
+}
 
-for pane in ${target_panes[@]};do
-    # Check that remaining args are ints
-    if ! [[ $pane =~ $re ]] ; then
-        echo "Error: Args must be pane numbers" >&2; exit 
+group_exists()
+{
+    declare -A groupMap
+    for pane in ${pane_array[@]};do
+        groupName=$(tmux show-options -p -t $pane -q -v @groupid)
+        if [ -z $groupName ];then
+            groupName="_"
+        fi
+        groupMap[$groupName]+="$pane|"
+    done
+
+    eval '[ ${'groupMap[$1]'+test} ]'
+}
+
+group_panes() 
+{
+    local user_targets=("$@")
+
+    # Check for missing group name
+    if [ $group_name = "+" ];then
+        echo "group_name cannot be set to '+', did you forget to add a group_name?"
+        exit 1
     fi
-    # Ensure that a mode is set (e or d)
-    if [ $mode = "None" ];then
-        echo "Must set mode: -e or -d" >&2; exit 1
+
+    # Check that group_name doesn't start with a number
+    if [[ $group_name =~ ^[0-9]*$ ]];then
+        echo "group_name cannot start with a number"
+        exit 1
     fi
-    # Run enable against target_panes
-    if [[ $mode = "-e" || $mode = "-a" ]]; then
-        echo "Enabling input on pane: $pane"
+
+    # If '+' add pane to group_name
+    if [ ${user_targets[0]} = "+" ];then
+        if group_exists $group_name;then
+            for pane in ${user_targets[@]:1};do
+                echo "Adding pane $pane to group $group_name"
+                tmux set-option -p -t $pane @groupid $group_name
+            done
+        else 
+            echo "Group: $group_name not found. Cannot add pane to non-existant group"
+            exit 1
+        fi
+    # Otherwise, add all target panes to group_name
+    else
+        for pane in ${user_targets[@]};do
+            tmux set-option -p -t $pane @groupid $group_name
+        done
+    fi
+}
+
+enable_all()
+{
+    for pane in ${pane_array[@]};do
         tmux select-pane -t $pane -e
         # Update tmux pane title (if enabled in tmux.conf)
-        tmux set-option -p -t $pane @custom_pane_title "enabled"
-    fi
-    # Run disable against target panes
-    if [ $mode = "-d" ];then
-        echo "Disabling input on pane: $pane"
+        tmux set-option -p -t $pane @custom_pane_title "E "
+    done
+}
+
+disable_panes()
+{
+    arr=("$@")
+    for pane in ${arr[@]};do
+        if ! [[ $pane =~ $num_re ]] ; then
+            echo "Args must be pane indexes not names: ($pane)"
+            exit 1
+        fi
         tmux select-pane -t $pane -d
         # Update tmux pane title (if enabled in tmux.conf)
-        tmux set-option -p -t $pane @custom_pane_title "disabled"
+        echo "disabling pane: $pane"
+        tmux set-option -p -t $pane @custom_pane_title "D "
+    done
+}
+
+enable_panes()
+{
+    arr=("$@")
+    for pane in ${arr[@]};do
+        if ! [[ $pane =~ $num_re ]] ; then
+            echo "Args must be pane indexes not names: ($pane)"
+            exit 1
+        fi
+        tmux select-pane -t $pane -e
+        # Update tmux pane title (if enabled in tmux.conf)
+        echo "enabling pane: $pane"
+        tmux set-option -p -t $pane @custom_pane_title "E "
+    done
+}
+
+enable_only_group()
+{
+    if group_exists $1;then
+        declare -A groupMap
+        for pane in ${pane_array[@]};do
+            groupName=$(tmux show-options -p -t $pane -q -v @groupid)
+            if [ -z $groupName ];then
+                groupName="_"
+            fi
+            groupMap[$groupName]+="$pane|"
+        done
+        enable_all
+        for key in ${!groupMap[@]};do
+            if [ $1 != $key ];then
+                for p in ${groupMap[$key]};do
+                    IFS='|'; read -r -a pane_list <<< $p
+                    disable_panes ${pane_list[@]}
+                done
+            fi
+        done
+    else
+        echo "Cannot enable non-existant group: $1"
+        exit 1
     fi
-done
+}
+
+enable_group()
+{
+    if group_exists $1;then
+        declare -A groupMap
+        for pane in ${pane_array[@]};do
+            groupName=$(tmux show-options -p -t $pane -q -v @groupid)
+            if [ -z $groupName ];then
+                groupName="_"
+            fi
+            groupMap[$groupName]+="$pane|"
+        done
+        for p in ${groupMap[$1]};do
+            IFS='|'; read -r -a pane_list <<< $p
+            enable_panes ${pane_list[@]}
+        done
+    else
+        echo "Cannot enable non-existant group: $1"
+        exit 1
+    fi
+}
+
+disable_group()
+{
+    if group_exists $1;then
+        declare -A groupMap
+        for pane in ${pane_array[@]};do
+            groupName=$(tmux show-options -p -t $pane -q -v @groupid)
+            if [ -z $groupName ];then
+                groupName="_"
+            fi
+            groupMap[$groupName]+="$pane|"
+        done
+        for p in ${groupMap[$1]};do
+            IFS='|'; read -r -a pane_list <<< $p
+            disable_panes ${pane_list[@]}
+        done
+    else
+        echo "Cannot disable non-existant group: $1"
+        exit 1
+    fi
+}
+
+main "$@"; exit
