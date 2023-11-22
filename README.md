@@ -1,15 +1,21 @@
 # Paneblocker tmux
 Script to disable/enable input on selected tmux panes. Useful for 'selecting' which panes you want to synchronize without having to synchronize all panes in tmux.
 
+https://github.com/rollerd/paneblocker/assets/4483048/2d252d2a-4f5d-4206-9f76-46652a80944a
+
 ### Installation
 Download the paneblock script.
 Make the file executable (`chmod 755 ./paneblock`).
 Copy the paneblock script to a directory that exists in your PATH. (`cp paneblock /usr/local/bin`)
 
 ### Usage
+
+##### Panes
+`paneblock [-i|e|d|a] <pane_index(es)>`
 Call paneblock with the expected 'mode' and target pane indexes. Target indexes are args separated by space.
 If using `-i`, the pane index selection will be inverted; ie all panes EXCEPT those specified.
 Examples:
+
 ```
 # Disable input on panes 0,4,6:
 paneblock -d 0 4 6
@@ -21,16 +27,32 @@ paneblock -e 4
 paneblock -a
 
 # Disable input on all panes EXCEPT 0,4,6:
-paneblock -d -i 0 4 6
+paneblock -id 0 4 6
 ```
 
-### Optional: Add paneblock status to pane title
-If you would like to see the status of each pane, you can add the following to your `tmux.conf` file:
-```bash
-set -g pane-border-status top
-set -g pane-border-format "#[fg=black, bg=green] #{pane_index} #{@custom_pane_title}"
-bind < command-prompt -p "New Title: " -I "#{@custom_pane_title}" "set-option -p @custom_pane_title '%%'"
+##### Groups
+`paneblock [-g|o|e|d|+] <group_name> [pane_index(es)]`
+Panes can be grouped by name and enabled/disabled the same as individual panes.
+Examples:
+
 ```
-This will add a small title bar to each pane, with the pane index number and the status of input - either 'enabled' or 'disabled'
-![status_bar](imgs/status.png)
+# Create a group named 'groupA' and add panes 0,2,3 to it
+paneblock -g groupA 0 2 3
+
+# Append pane(s) to an existing group
+paneblock -g groupA + 6 7
+
+# Enable panes in specified group
+paneblock -eg groupA
+
+# Disable panes in specified group
+paneblock -dg groupA
+
+# Enable only panes in specified group (disable all other panes/groups)
+paneblock -og groupA
+```
+
+
+
+
 
